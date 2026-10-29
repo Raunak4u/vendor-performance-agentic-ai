@@ -66,19 +66,21 @@ from src.database import (
 try:
     if get_row_count('vendor_summary') != 129:
         _data = DB_PATH.parent / 'data'
-        _need = {'vendors': _data / 'vendors.csv', 'products': _data / 'products.csv', 'purchases': _data / 'purchases.csv', 'sales': _data / 'sales.csv'}
+        _need = {'vendors': _data / 'vendors.csv', 'products': _data / 'products.csv', 'vendor_summary': _data / 'vendor_summary.csv'}
         if all(f.is_file() for f in _need.values()):
             try:
                 DB_PATH.unlink(missing_ok=True)
             except Exception:
                 pass
-            print('Auto-bootstrap: loading CSVs from data/ ...')
+            print('Auto-bootstrap: loading pre-built vendor_summary (452M full data) ...')
             _eng = get_engine()
             try:
-                for _tbl in ['vendors', 'products', 'purchases', 'sales']:
+                for _tbl in ['vendors', 'products', 'vendor_summary']:
                     load_csv(str(_need[_tbl]), _tbl, _eng)
-                create_vendor_summary(_eng)
-                build_aggregates(_eng)
+                try:
+                    build_aggregates(_eng)
+                except Exception as _be:
+                    print(f'build_aggregates skipped: {_be}')
             finally:
                 _eng.dispose()
             print('Auto-bootstrap done')
