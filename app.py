@@ -466,154 +466,45 @@ def totals(df: pd.DataFrame) -> dict:
     }
 
 
-
-def apply_filters(
-    vs: pd.DataFrame,
-    vsc: pd.DataFrame,
-    f: dict,
-):
-    """
-    Returns:
-        filtered_vendors: vendor rows matching the selected filters
-        filtered_scope: matching store/classification aggregate rows
-
-    Global KPI cards must continue to use the original `vs` DataFrame.
-    """
+def apply_filters(vs: pd.DataFrame, vsc: pd.DataFrame, f: dict):
+    """Returns (filtered vendor frame, store/class rows of the filtered vendors)."""
     base = vs.copy()
-    scoped = vsc.copy()
-
-    # Apply store and classification filters using pre-aggregated data.
-    if f["stores"] or f["classes"]:
-        if scoped.empty:
-            return pd.DataFrame(columns=base.columns), scoped
-
-        mask = pd.Series(True, index=scoped.index)
-
+    scoped = vsc
+    if (f["stores"] or f["classes"]) and not vsc.empty:
+        mask = pd.Series(True, index=vsc.index)
         if f["stores"]:
-            mask &= scoped["store"].isin(f["stores"])
-
+            mask &= vsc["store"].isin(f["stores"])
         if f["classes"]:
-            mask &= scoped["classification"].isin(f["classes"])
-
-        scoped = scoped.loc[mask].copy()
-
-        group_cols = [
-            c for c in (
-                "sales",
-                "sales_qty",
-                "purchases",
-                "purchase_qty",
-            )
-            if c in scoped.columns
-        ]
-
-        if "vendor_no" not in scoped.columns:
-            return pd.DataFrame(columns=base.columns), scoped
-
-        if not group_cols:
-            return pd.DataFrame(columns=base.columns), scoped
-
-        agg = scoped.groupby(
-            "vendor_no",
-            as_index=False,
-        )[group_cols].sum()
-
-        # Replace only metrics recalculated from the selected scope.
-        replace_cols = [
-            c for c in (
-                "sales",
-                "sales_qty",
-                "purchases",
-                "purchase_qty",
-                "profit",
-                "margin",
-                "sell_through",
-                "avg_price",
-                "rel_sales",
-                "score",
-                "grade",
-                "risk",
-            )
-            if c in base.columns
-        ]
-
-        base = base.drop(columns=replace_cols, errors="ignore")
-        base = base.merge(agg, on="vendor_no", how="inner")
-
+            mask &= vsc["classification"].isin(f["classes"])
+        scoped = vsc[mask]
+        agg = scoped.groupby("vendor_no", as_index=False)[["sales", "sales_qty", "purchases", "purchase_qty"]].sum()
+        base = base.drop(columns=["sales", "sales_qty", "purchases", "purchase_qty", "profit", "margin", "sell_through"]).merge(
+            agg, on="vendor_no", how="inner"
+        )
         base["profit"] = base["sales"] - base["purchases"]
-
-        base["margin"] = np.where(
-            base["sales"] > 0,
-            base["profit"] / base["sales"].where(
-                base["sales"] > 0, 1
-            ) * 100.0,
-            0.0,
-        )
-
+        base["margin"] = np.where(base["sales"] > 0, base["profit"] / base["sales"].where(base["sales"] > 0, 1) * 100.0, 0.0)
         base["sell_through"] = np.where(
-            base["purchase_qty"] > 0,
-            base["sales_qty"] / base["purchase_qty"].where(
-                base["purchase_qty"] > 0, 1
-            ) * 100.0,
-            0.0,
+            base["purchase_qty"] > 0, base["sales_qty"] / base["purchase_qty"].where(base["purchase_qty"] > 0, 1) * 100.0, 0.0
         )
-
-        base["avg_price"] = np.where(
-            base["sales_qty"] > 0,
-            base["sales"] / base["sales_qty"].where(
-                base["sales_qty"] > 0, 1
-            ),
-            0.0,
-        )
-
-        # Recalculate scores and risk grades for scoped metrics.
-        base = add_scores(base)
-
-    # Vendor name / number search.
-    term = str(f.get("search", "")).strip().lower()
-
+    term = f["search"].strip().lower()
     if term:
-        name_match = base["vendor_name"].astype(str).str.lower().str.contains(
-            re.escape(term), na=False
-        )
-        number_match = base["vendor_no"].astype(str).str.contains(
-            re.escape(term), regex=False, na=False
-        )
-        base = base.loc[name_match | number_match]
-
-    # Profitability filter.
-    option = f.get("profit", "All vendors")
-
+        base = base[base["vendor_name"].str.lower().str.contains(re.escape(term), na=False) | base["vendor_no"].astype(str).str.contains(re.escape(term))]
+    option = f["profit"]
     if option == "Profitable only":
-        base = base.loc[base["profit"] > 0]
+        base = base[base["profit"] > 0]
     elif option == "Loss-making only":
-        base = base.loc[base["profit"] < 0]
+        base = base[base["profit"] < 0]
     elif option.startswith("Low margin"):
-        base = base.loc[base["margin"] < 10]
-
-    # Margin range.
-    lo, hi = f.get("margin", (-100.0, 100.0))
-    if (lo, hi) != (-100.0, 100.0):
-        base = base.loc[
-            base["margin"].between(lo, hi, inclusive="both")
-        ]
-
-    # Minimum sales.
-    minimum_sales = float(f.get("minsales", 0) or 0)
-
-    if minimum_sales > 0:
-        base = base.loc[base["sales"] >= minimum_sales]
-
+        base = base[base["margin"] < 10]
+    lo, hi = f["margin"]
+    if (lo, hi) != FILTER_DEFAULTS["f_margin"]:
+        base = base[(base["margin"] >= lo) & (base["margin"] <= hi)]
+    if f["minsales"] > 0:
+        base = base[base["sales"] >= f["minsales"]]
     base = base.reset_index(drop=True)
-
-    # Restrict chart data to the vendors surviving all filters.
-    if not scoped.empty:
-        scoped = scoped.loc[
-            scoped["vendor_no"].isin(base["vendor_no"])
-        ].copy()
-
+    if not vsc.empty:
+        scoped = scoped[scoped["vendor_no"].isin(base["vendor_no"])]
     return base, scoped
-
 
 
 def alerts_frame(vs: pd.DataFrame) -> pd.DataFrame:
@@ -939,46 +830,6 @@ def find_vendor(name: str, vs: pd.DataFrame):
 def product_frame(vp: pd.DataFrame) -> pd.DataFrame:
     if vp.empty:
         return pd.DataFrame()
-    # FIX: agar description column nahi hai to product_id / brand se bana lo
-    if "description" not in vp.columns:
-        vp = vp.copy()
-        if "product_id" in vp.columns:
-            vp["description"] = vp["product_id"].astype(str)
-        elif "brand" in vp.columns:
-            vp["description"] = vp["brand"].astype(str)
-        else:
-            vp["description"] = "Unknown"
-    if "brand" not in vp.columns:
-        vp = vp.copy()
-        vp["brand"] = "Unknown"
-    # FIX: column naam alag ho sakta hai - pehle normalize karo
-    vp = vp.copy()
-    # sales
-    if "sales" not in vp.columns:
-        for c in ["sales_dollars", "total_sales", "sales_amount", "revenue"]:
-            if c in vp.columns:
-                vp["sales"] = vp[c]; break
-    if "sales" not in vp.columns:
-        vp["sales"] = 0
-    if "sales_qty" not in vp.columns:
-        for c in ["sales_quantity", "qty_sold", "quantity_sold", "units_sold"]:
-            if c in vp.columns:
-                vp["sales_qty"] = vp[c]; break
-    if "sales_qty" not in vp.columns:
-        vp["sales_qty"] = 0
-    # purchases
-    if "purchases" not in vp.columns:
-        for c in ["purchase_dollars", "total_purchases", "purchase_amount", "purchase_cost", "cost"]:
-            if c in vp.columns:
-                vp["purchases"] = vp[c]; break
-    if "purchases" not in vp.columns:
-        vp["purchases"] = 0
-    if "purchase_qty" not in vp.columns:
-        for c in ["purchase_quantity", "qty_purchased", "quantity_purchased", "units_purchased"]:
-            if c in vp.columns:
-                vp["purchase_qty"] = vp[c]; break
-    if "purchase_qty" not in vp.columns:
-        vp["purchase_qty"] = 0
     pf = vp.groupby(["brand", "description"], as_index=False)[["sales", "sales_qty", "purchases", "purchase_qty"]].sum()
     pf["profit"] = pf["sales"] - pf["purchases"]
     pf["margin"] = np.where(pf["sales"] > 0, pf["profit"] / pf["sales"].where(pf["sales"] > 0, 1) * 100.0, 0.0)
@@ -1000,64 +851,10 @@ def ai_answer(question: str, ctx) -> dict:
         if vendor is None:
             return {"text": f"I could not find a vendor matching '{m.group(2).strip()}'.", "table": None, "fig": None}
         rows = vp[vp["vendor_no"] == vendor["vendor_no"]].copy()
-        # FIX: sales/purchases naam normalize karo
-        if "sales" not in rows.columns:
-            for _c in ["sales_dollars", "total_sales", "sales_amount", "revenue"]:
-                if _c in rows.columns:
-                    rows["sales"] = rows[_c]; break
-        if "sales" not in rows.columns:
-            rows["sales"] = 0
-        if "purchases" not in rows.columns:
-            for _c in ["purchase_dollars", "total_purchases", "purchase_amount", "purchase_cost", "cost", "purchases_dollars"]:
-                if _c in rows.columns:
-                    rows["purchases"] = rows[_c]; break
-        if "purchases" not in rows.columns:
-            rows["purchases"] = 0
         rows["profit"] = rows["sales"] - rows["purchases"]
         rows = rows.sort_values("sales", ascending=False).head(n)
-                # Resolve actual column names safely.
-        def get_column(df, candidates, default):
-            column_map = {
-                str(col).strip().lower(): col
-                for col in df.columns
-            }
-            for candidate in candidates:
-                actual = column_map.get(candidate.lower())
-                if actual is not None:
-                    return df[actual]
-            return pd.Series(default, index=df.index)
-
-        table = pd.DataFrame({
-            "Product": get_column(
-                rows,
-                ["description", "product_description",
-                 "product_name", "product", "product_desc"],
-                "Unknown Product"
-            ),
-            "Brand": get_column(
-                rows, ["brand", "brand_name"], "Unknown"
-            ),
-            "Sales": get_column(
-                rows, ["sales", "total_sales", "sales_amount"], 0
-            ),
-            "Purchases": get_column(
-                rows,
-                ["purchases", "total_purchases", "purchase_amount"],
-                0
-            ),
-            "Profit": get_column(
-                rows, ["profit", "total_profit"], 0
-            ),
-            "Margin %": get_column(
-                rows, ["margin", "margin_pct", "margin_percent"], 0
-            )
-        })
-        fig = hbar(get_column(
-            rows,
-            ["description", "product_description", "product_name",
-             "product", "product_desc"],
-            "Unknown Product"
-        ).astype(str).str.slice(0, 32), rows["sales"], f"Top {len(rows)} products by sales - {vendor['vendor_name']}")
+        table = pd.DataFrame({"Product": rows["description"], "Brand": rows["brand"], "Sales": rows["sales"], "Purchases": rows["purchases"], "Profit": rows["profit"]})
+        fig = hbar(rows["description"].str.slice(0, 32), rows["sales"], f"Top {len(rows)} products by sales - {vendor['vendor_name']}")
         return {"text": f"Top {len(rows)} products of {vendor['vendor_name']} by sales.", "table": table, "fig": fig}
     if re.search(r"top\s*\d*\s*products?", q):
         if vp.empty:
@@ -1175,20 +972,6 @@ def monthly_frame(vm: pd.DataFrame, vendor_ids) -> pd.DataFrame:
     if vm.empty:
         return pd.DataFrame()
     rows = vm[vm["vendor_no"].isin(vendor_ids)]
-    # FIX: monthly_frame me bhi column naam normalize karo
-    rows = rows.copy()
-    if "sales" not in rows.columns:
-        for c in ["sales_dollars", "total_sales", "sales_amount", "revenue"]:
-            if c in rows.columns:
-                rows["sales"] = rows[c]; break
-    if "sales" not in rows.columns:
-        rows["sales"] = 0
-    if "purchases" not in rows.columns:
-        for c in ["purchase_dollars", "total_purchases", "purchase_amount", "purchase_cost", "cost", "purchases_dollars"]:
-            if c in rows.columns:
-                rows["purchases"] = rows[c]; break
-    if "purchases" not in rows.columns:
-        rows["purchases"] = 0
     out = rows.groupby("month", as_index=False)[["sales", "purchases"]].sum().sort_values("month")
     out["profit"] = out["sales"] - out["purchases"]
     return out
@@ -1342,56 +1125,18 @@ def tab_deepdive(ctx) -> None:
             aggregates_message()
         else:
             rows = vp[vp["vendor_no"] == vendor_id].copy()
-            # FIX: sales/purchases naam normalize karo
-            if "sales" not in rows.columns:
-                for _c in ["sales_dollars", "total_sales", "sales_amount", "revenue"]:
-                    if _c in rows.columns:
-                        rows["sales"] = rows[_c]; break
-            if "sales" not in rows.columns:
-                rows["sales"] = 0
-            if "purchases" not in rows.columns:
-                for _c in ["purchase_dollars", "total_purchases", "purchase_amount", "purchase_cost", "cost", "purchases_dollars"]:
-                    if _c in rows.columns:
-                        rows["purchases"] = rows[_c]; break
-            if "purchases" not in rows.columns:
-                rows["purchases"] = 0
             rows["profit"] = rows["sales"] - rows["purchases"]
             rows["margin"] = np.where(rows["sales"] > 0, rows["profit"] / rows["sales"].where(rows["sales"] > 0, 1) * 100, 0.0)
             rows = rows.sort_values("sales", ascending=False).head(10)
             if rows.empty:
                 st.info("No product data for this vendor.")
             else:
-                def safe_col(candidates, default):
-                    lookup = {str(c).strip().lower(): c for c in rows.columns}
-                    for name in candidates:
-                        if name.lower() in lookup:
-                            return rows[lookup[name.lower()]]
-                    return pd.Series(default, index=rows.index)
-                
-                table = pd.DataFrame({
-                    "Product": safe_col(
-                        ["description", "product_description", "product_name",
-                         "product", "product_desc"], "Unknown Product"
-                    ),
-                    "Brand": safe_col(["brand", "brand_name"], "Unknown"),
-                    "Sales": safe_col(["sales", "total_sales", "sales_amount"], 0),
-                    "Purchases": safe_col(
-                        ["purchases", "total_purchases", "purchase_amount"], 0
-                    ),
-                    "Profit": safe_col(["profit", "total_profit"], 0),
-                    "Margin %": safe_col(
-                        ["margin", "margin_pct", "margin_percent"], 0
-                    )
-                })
+                table = pd.DataFrame({"Product": rows["description"], "Brand": rows["brand"], "Sales": rows["sales"], "Purchases": rows["purchases"], "Profit": rows["profit"], "Margin %": rows["margin"]})
                 a, b = st.columns([3, 2])
                 with a:
                     show_df(styled(table, money_cols=["Sales", "Purchases", "Profit"], pct_cols=["Margin %"]))
                 with b:
-                    show_plot(hbar(safe_col(
-                        ["description", "product_description",
-                         "product_name", "product", "product_desc"],
-                        "Unknown Product"
-                    ).astype(str).str.slice(0, 28), rows["sales"], "", BLUE), 330)
+                    show_plot(hbar(rows["description"].str.slice(0, 28), rows["sales"], "", BLUE), 330)
 
     vendors = ctx.vendors
     if not vendors.empty and "vendor_no" in vendors.columns:
