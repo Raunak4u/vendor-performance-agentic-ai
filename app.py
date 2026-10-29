@@ -64,10 +64,14 @@ from src.database import (
 # AUTO-BOOTSTRAP FROM data/ - for Streamlit Cloud
 # ----------------------------------------------------------------------------
 try:
-    if not table_exists('vendor_summary') or get_row_count('vendor_summary') == 0:
+    if get_row_count('vendor_summary') != 129:
         _data = DB_PATH.parent / 'data'
         _need = {'vendors': _data / 'vendors.csv', 'products': _data / 'products.csv', 'purchases': _data / 'purchases.csv', 'sales': _data / 'sales.csv'}
         if all(f.is_file() for f in _need.values()):
+            try:
+                DB_PATH.unlink(missing_ok=True)
+            except Exception:
+                pass
             print('Auto-bootstrap: loading CSVs from data/ ...')
             _eng = get_engine()
             try:
