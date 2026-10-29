@@ -59,6 +59,28 @@ from src.database import (
     table_exists,
 )
 
+
+# ----------------------------------------------------------------------------
+# AUTO-BOOTSTRAP FROM data/ - for Streamlit Cloud
+# ----------------------------------------------------------------------------
+try:
+    if not table_exists('vendor_summary') or get_row_count('vendor_summary') == 0:
+        _data = DB_PATH.parent / 'data'
+        _need = {'vendors': _data / 'vendors.csv', 'products': _data / 'products.csv', 'purchases': _data / 'purchases.csv', 'sales': _data / 'sales.csv'}
+        if all(f.is_file() for f in _need.values()):
+            print('Auto-bootstrap: loading CSVs from data/ ...')
+            _eng = get_engine()
+            try:
+                for _tbl in ['vendors', 'products', 'purchases', 'sales']:
+                    load_csv(str(_need[_tbl]), _tbl, _eng)
+                create_vendor_summary(_eng)
+                build_aggregates(_eng)
+            finally:
+                _eng.dispose()
+            print('Auto-bootstrap done')
+except Exception as _e:
+    print(f'Auto-bootstrap skipped: {_e}')
+
 # ----------------------------------------------------------------------------
 # Page config + constants
 # ----------------------------------------------------------------------------
