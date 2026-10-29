@@ -1,0 +1,13 @@
+﻿.env
+__pycache__/
+.vscode/
+*.db
+*.backup*
+*.before*
+fix*.py
+main_backup.py
+
+venv/
+data/*.csv
+data/*.db
+*.pyc
